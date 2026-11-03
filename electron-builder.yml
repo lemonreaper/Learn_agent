@@ -187,8 +187,10 @@ publish:
   # from a private repo are impossible, and a token baked into the app
   # would be a leak. desktop:dist passes no --publish flag, so builds never
   # upload; publishing happens at release time (GH_TOKEN + --publish).
+  # FSRS fork (2026-11-03): the feed points at THIS repository, so a fork
+  # build never auto-updates itself back to upstream (which has no FSRS).
   - provider: github
-    owner: amosblomqvist
-    repo: learnharness
+    owner: lemonreaper
+    repo: Learn_agent
     # All three CI jobs contribute assets; only the owner publishes it.
     releaseType: draft
