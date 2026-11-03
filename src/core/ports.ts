@@ -179,6 +179,19 @@ export interface JobStore {
  * the callers. (The legacy default-settings.json fold died with the chat
  * section — per-session models, owner 2026-09-28.)
  */
+/**
+ * The spaced-repetition ledger (FSRS fork, 2026-11-03): append-only review
+ * events (core/review.ts). appendEvents is idempotent by event id — an id
+ * already in the ledger is skipped, so re-deriving events from a chat
+ * record never double-counts a review.
+ */
+export interface ReviewStore {
+	/** Every valid event, file order (fold via core/review.ts canonicalEvents). */
+	listEvents(): import("./review.ts").ReviewEvent[];
+	/** Append the events whose ids are new; returns those actually written. */
+	appendEvents(events: readonly import("./review.ts").ReviewEvent[]): import("./review.ts").ReviewEvent[];
+}
+
 export interface SettingsStore {
 	/** The sanitized record, or null when none exists yet (first boot). */
 	readSettings(): UserSettings | null;

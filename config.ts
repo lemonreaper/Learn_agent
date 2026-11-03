@@ -114,6 +114,16 @@ export const GRAPH_FORMAT_FILE = path.join(PATHS.graph, "format.json");
 export const SETTINGS_FILE = path.join(DATA_ROOT, "settings.json");
 
 /**
+ * The spaced-repetition ledger (FSRS fork, 2026-11-03): one JSON line per
+ * rated review (core/review.ts ReviewEvent). Append-only with
+ * deterministic ids — two copies merge by union, which is what a future
+ * cross-device sync relies on. Derived from chat records, so it is
+ * rebuildable; but it also stores each review's PREDICTED recall, which
+ * only exists at the moment of review — keep it.
+ */
+export const REVIEW_LOG_FILE = path.join(DATA_ROOT, "review", "log.jsonl");
+
+/**
  * User prompt-override files (settings-storage wave, 2026-09-19): the
  * per-segment system-prompt overrides mirroring the SOURCE layout
  * (src/agent/prompts/) — the shared base as prompts/system-prompt.md,

@@ -32,6 +32,7 @@ import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
 import { effectiveSettings, stores } from "./stores.ts";
 import { searchAvailable, searchProvider } from "./search.ts";
+import { recordPracticeReviews, reviewScheduleText } from "./review.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "../core/contracts/claude-code.ts";
 import {
@@ -483,6 +484,8 @@ export async function handleChatInput(
 							searchAvailable,
 						},
 						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
+						// FSRS fork: the read-only schedule (review_queue).
+						review: { scheduleText: (scope, limit) => reviewScheduleText(scope, limit) },
 					},
 					agentOpts,
 				)
@@ -607,6 +610,21 @@ export async function handleChatInput(
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
 					triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
+				}
+				// SPACED REPETITION (FSRS fork, 2026-11-03): a practice turn's
+				// rated concludes become review events — derived from the record
+				// persistTurn just landed (only what is durable counts), and
+				// idempotent by id. Best-effort: a ledger failure must never fail
+				// the learner's turn; the next settlement re-derives it.
+				// Skipped under tests (the extraction precedent — scripted chats
+				// live in the shared data dir; tests/review.test.ts covers
+				// recordPracticeReviews with an isolated ledger).
+				if (record.kind === "practice" && process.env.NODE_ENV !== "test") {
+					try {
+						recordPracticeReviews(chatId);
+					} catch (error) {
+						console.error(`[chat ${chatId}] review ledger append failed:`, error);
+					}
 				}
 				// PARKED DISMISSAL (owner, 2026-10-04): a dismissal that arrived
 				// mid-turn was parked by the dismiss route (202); now that

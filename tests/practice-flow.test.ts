@@ -48,13 +48,16 @@ const POSE = {
 	modelSolution: "Let |G| = p. Any x ≠ e generates a subgroup whose order divides p…",
 } as const;
 
-/** A valid conclude — no reveal field; the pose's modelSolution is the reveal. */
+/** A valid conclude — no reveal field; the pose's modelSolution is the reveal.
+ *  FSRS fork (2026-11-03): a tagged pose must be concluded with one rating
+ *  per target — the pose targets "group-order". */
 const CONCLUDE = {
 	outcome: "solved",
 	verdict: "The subgroup-order argument is credited in full.",
 	rung: null,
 	missClass: null,
 	retest: false,
+	ratings: [{ target: "group-order", rating: "good", reason: "Came unaided; ran cleanly." }],
 } as const;
 
 const createdChats: string[] = [];

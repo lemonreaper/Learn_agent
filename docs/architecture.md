@@ -109,7 +109,18 @@ A practice session can start with graph selections or free-form material. Sessio
 - A turn-scoped gate, seeded from the record, enforces one active problem and rejects conclusion without one. The gate updates during tool execution, so it does not depend on the settlement-only transcript write.
 - After conclusion, the prompt and tool acknowledgement tell the agent to close the turn and wait for explicit learner go-ahead. This pause is not a tool-level terminating gate on `conclude`. The Next problem action adds a native marker; dismissals use a synthesized conclusion and the separate dismissal path.
 
-Practice outcomes are evidence in the session, not graph mastery levels, certification or a spaced-repetition state store. The normal turn-settlement path skips extraction for practice sessions. Problem/solution/outcome projection lives in `src/core/native-messages.ts` and `src/core/view.ts`; the tools live in `src/agent/tools/practice.ts`.
+Practice outcomes are evidence in the session, not graph mastery levels or certification. The one thing that outlives the session is the spaced-repetition ledger (§4a). The normal turn-settlement path skips extraction for practice sessions. Problem/solution/outcome projection lives in `src/core/native-messages.ts` and `src/core/view.ts`; the tools live in `src/agent/tools/practice.ts`.
+
+### 4a. Spaced repetition (FSRS)
+
+A **card** is a graph proposition. It is born the first time a tagged practice problem is concluded with a rating. Extraction never creates cards.
+
+- **Grades are the agent's call.** `conclude` carries `ratings: [{target, rating, reason}]` with `again | hard | good | easy`. The tool enforces only *coverage*: every target of a tagged problem must be rated, and every rated target must be a known proposition. It does not constrain the grade values. The doctrine segment `prompts/practice/20-review.md` tells the agent how to read the outcome, rung, miss class and the learner's stated confidence.
+- **Stated confidence** is optional on a thinking submission (`{type: "thinking", …, confidence?: 0–100}`). It rides the marker's model-facing label and its details.
+- **The ledger** is `review/log.jsonl` (`REVIEW_LOG_FILE`): append-only `ReviewEvent` lines whose ids are deterministic (`chat:concludeCall:proposition`). Turn settlement derives events from the *persisted* record's clean conclude calls (`server/review.ts recordPracticeReviews`). Derivation is idempotent, so a re-settled or retried turn never double-counts. Merging two ledger copies is a union by id, and folding sorts by time then id. This is the property a cross-device sync relies on.
+- **Scheduling** replays the ledger through `ts-fsrs` (`core/review.ts`): default weights, 90% desired retention, day-granular (no short-term steps, no fuzz).
+- **Calibration** is the guard on the unconstrained grades. Each event stores FSRS's forecast recall *before* that review (`predictedR`). `calibrationOf` compares those forecasts with observed recall (any grade but `again`): Brier score, bias, and binned reliability. If the agent's grades inflate, the forecasts run optimistic and the bias goes positive.
+- **Surfaces.** The practice agent gets the read-only `review_queue` tool. Picked propositions carry their review history in the graph-context marker, and a session created with `review: true` is framed as a review session. `GET /api/review` serves the due queue and calibration to the home control.
 
 ## 5. Background work and delivery
 

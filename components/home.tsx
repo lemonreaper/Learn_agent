@@ -7,6 +7,7 @@ import { GraphView } from "@/components/graph-view";
 import { MinimalHome } from "@/components/minimal-home";
 import { SetupDialog } from "@/components/setup-dialog";
 import { ComposerActions, NodePickerControl } from "@/components/composer-actions";
+import { ReviewControl, useReviewSummary, type ReviewPick } from "@/components/review-control";
 import { useModelSetup, selectedModelUnavailable, openModelPicker, ZeroKeysPill } from "@/components/setup-cta";
 import { DictationBar, joinDictation, useDictation } from "@/components/dictation";
 import { useFieldCycle } from "@/components/field-cycle";
@@ -97,6 +98,23 @@ export function Home({
 	// The chain table is CONTROLLED off this id set (the lifted pick).
 	const pickedIds = useMemo(() => new Set(practiceProps.map((p) => p.id)), [practiceProps]);
 
+	/* SPACED REPETITION (FSRS fork, 2026-11-03): "Review N due" seeds a
+	 *  practice session with the due cards and flags it a review session
+	 *  (the server tells the agent; history rides the context marker). The
+	 *  flag dies with Clear or a mode switch back to teach. */
+	const reviewSummary = useReviewSummary();
+	const [reviewSession, setReviewSession] = useState(false);
+	const startReview = (picks: ReviewPick[]) => {
+		setMode("practice");
+		setPracticeProps(picks);
+		setReviewSession(true);
+		if (!topicRef.current.trim()) {
+			topicRef.current = "Spaced-repetition review";
+			setTopic(topicRef.current);
+		}
+		topicInputRef.current?.focus();
+	};
+
 	/* FINISH DICTATION FIRST (owner, 2026-10-01): Enter may arrive while a
 	 * run is live with the topic still deferred in the run's buffer — stop
 	 * the run, let the last finals land, THEN read the REF mirror (not the
@@ -147,6 +165,7 @@ export function Home({
 				title: t,
 				...(mode === "practice" ? { kind: "practice" } : {}),
 				...(practiceProps.length > 0 ? { graphContext: { propositions: practiceProps } } : {}),
+				...(mode === "practice" && reviewSession && practiceProps.length > 0 ? { review: true as const } : {}),
 			}, fetch, JSON.stringify(catalog?.slots.strong));
 			router.push(target);
 		} catch {
@@ -219,12 +238,20 @@ export function Home({
 					    shows the pick HINT so the affordance is discoverable;
 					    teaching mode with nothing picked renders nothing. */}
 					<ComposerActions
-						picker={(practiceProps.length > 0 || mode === "practice") && (
-							<NodePickerControl
-								count={practiceProps.length}
-								onOpen={() => setChainSelectOpen(true)}
-								onClear={() => setPracticeProps([])}
-							/>
+						picker={(practiceProps.length > 0 || mode === "practice" || (reviewSummary?.total ?? 0) > 0) && (
+							<>
+								{(practiceProps.length > 0 || mode === "practice") && (
+									<NodePickerControl
+										count={practiceProps.length}
+										onOpen={() => setChainSelectOpen(true)}
+										onClear={() => {
+											setPracticeProps([]);
+											setReviewSession(false);
+										}}
+									/>
+								)}
+								<ReviewControl summary={reviewSummary} onStartReview={startReview} />
+							</>
 						)}
 						setup={zeroKeys ? (
 							<ZeroKeysPill inline onOpen={() => setSetupOpen(true)} />
@@ -301,7 +328,10 @@ export function Home({
 										key={m}
 										type="button"
 										data-testid={`home-mode-${m}`}
-										onClick={() => setMode(m)}
+										onClick={() => {
+											setMode(m);
+											if (m === "teach") setReviewSession(false);
+										}}
 										className={
 											"flex items-center gap-1 rounded-sm px-2 py-0.5 text-[11px] uppercase tracking-wider transition-colors " +
 											(mode === m

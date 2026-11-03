@@ -276,7 +276,13 @@ export interface GraphContextPick {
  *  to a user message by toLlmMessages like every marker); `details`
  *  feeds the transcript's collapsible GraphContextCard. No more seed
  *  text glued into the first prompt. */
-export function newGraphContextMessage(picks: readonly GraphContextPick[], chains: readonly string[]): LhMarkerMessage {
+export function newGraphContextMessage(
+	picks: readonly GraphContextPick[],
+	chains: readonly string[],
+	/** Model-facing tail (FSRS fork): review framing + per-pick review
+	 *  history. Never rendered by the card (details stay unchanged). */
+	extraLines: readonly string[] = [],
+): LhMarkerMessage {
 	// IDS FIRST (owner round 9, 2026-10-05 — the mastery-trace contract):
 	// each proposition is introduced ONCE with its id, name, and statement;
 	// the problem tool's `target` field takes these ids (names normalize to
@@ -296,6 +302,7 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
 	if (chains.length > 0) {
 		lines.push("", "Reasoning chains among them (premises → conclusion):", ...chains.map((c) => `- ${c}`));
 	}
+	lines.push(...extraLines);
 	return {
 		id: newMessageId(),
 		role: "custom",
@@ -313,14 +320,21 @@ export function newGraphContextMessage(picks: readonly GraphContextPick[], chain
  *  content label is the single "Your thinking"; `details` keeps the raw
  *  payload for the transcript card. One problem may carry many
  *  submissions. */
-export function newThinkingMessage(problemCallId: string, text: string): LhMarkerMessage {
+export function newThinkingMessage(problemCallId: string, text: string, confidence?: number): LhMarkerMessage {
+	// STATED CONFIDENCE (FSRS fork, 2026-11-03): optional — the learner's
+	// probability (0–100) that this submission's answer is correct. It
+	// rides the model-facing label (the agent weighs it when rating the
+	// review) and the details (the ledger copies it onto review events).
+	const c = typeof confidence === "number" && Number.isFinite(confidence)
+		? Math.max(0, Math.min(100, Math.round(confidence)))
+		: undefined;
 	return {
 		id: newMessageId(),
 		role: "custom",
 		customType: "practice-thinking",
-		content: `${THINKING_LABEL}:\n${text}`,
+		content: c !== undefined ? `${THINKING_LABEL} (stated confidence this is correct: ${c}%):\n${text}` : `${THINKING_LABEL}:\n${text}`,
 		display: true,
-		details: { problemCallId, text },
+		details: c !== undefined ? { problemCallId, text, confidence: c } : { problemCallId, text },
 		timestamp: Date.now(),
 	};
 }
