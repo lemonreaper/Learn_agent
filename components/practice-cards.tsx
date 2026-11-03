@@ -53,6 +53,8 @@ export interface PracticeThinkingData {
 	/** Legacy records (pre 2026-10-05) carry the old two-lane flag; ignored. */
 	commit?: boolean;
 	text: string;
+	/** Stated confidence (0–100), FSRS fork — absent when not set. */
+	confidence?: number;
 }
 
 export function ProblemCard({ part }: ArtifactPartProps) {
@@ -92,6 +94,60 @@ const OUTCOME_CHIP: Record<string, string> = {
 	surrendered: "bg-red-500/15 text-red-500",
 	dismissed: "bg-muted text-muted-foreground",
 };
+
+/* THE REVIEW GRADES (FSRS fork, 2026-11-03): the agent's spaced-repetition
+ * rating per target, shown on the conclusion so the learner sees what was
+ * scheduled and why — and can push back in the pause. */
+const RATING_CHIP: Record<string, string> = {
+	again: "bg-red-500/15 text-red-500",
+	hard: "bg-amber-500/15 text-amber-500",
+	good: "bg-green-500/15 text-green-500",
+	easy: "bg-sky-500/15 text-sky-500",
+};
+
+function ReviewGrades({ ratings }: { ratings: Array<{ target: string; rating: string; reason: string }> }) {
+	const [names, setNames] = useState<Record<string, string>>({});
+	useEffect(() => {
+		let live = true;
+		void nodeNameMap().then((m) => {
+			if (live) setNames(m);
+		});
+		return () => {
+			live = false;
+		};
+	}, []);
+	return (
+		<div data-testid="review-grades" className="mt-3 border-t pt-2">
+			<div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Spaced repetition</div>
+			<ul className="space-y-1">
+				{ratings.map((r) => (
+					<li key={r.target} className="flex items-baseline gap-2 text-sm">
+						<span className={cn("shrink-0 rounded px-1.5 py-0.5 text-xs font-medium uppercase", RATING_CHIP[r.rating] ?? "bg-muted text-muted-foreground")}>
+							{r.rating}
+						</span>
+						<span className="min-w-0">
+							<span className="text-foreground/80">{names[r.target] ?? r.target}</span>
+							{r.reason ? <span className="text-foreground/50"> — {r.reason}</span> : null}
+						</span>
+					</li>
+				))}
+			</ul>
+		</div>
+	);
+}
+
+function ratingsFrom(input: unknown): Array<{ target: string; rating: string; reason: string }> {
+	const raw = (input as { ratings?: unknown } | null | undefined)?.ratings;
+	if (!Array.isArray(raw)) return [];
+	return raw.flatMap((r) => {
+		const target = (r as { target?: unknown })?.target;
+		const rating = (r as { rating?: unknown })?.rating;
+		const reason = (r as { reason?: unknown })?.reason;
+		return typeof target === "string" && typeof rating === "string"
+			? [{ target, rating, reason: typeof reason === "string" ? reason : "" }]
+			: [];
+	});
+}
 
 export function ConcludeCard({ part }: ArtifactPartProps) {
 	// The conclusion redesigned (owner round, 2026-10-05): the SOLUTION is
@@ -149,6 +205,7 @@ export function ConcludeCard({ part }: ArtifactPartProps) {
 					</div>
 				</>
 			)}
+			{ratingsFrom(part.input).length > 0 && <ReviewGrades ratings={ratingsFrom(part.input)} />}
 			<MetadataPopover
 				concludeInput={input}
 				problemInput={(part.problemInput ?? {}) as { mode?: unknown; target?: unknown }}
@@ -294,5 +351,6 @@ export function ThinkingCard({ data }: { data: PracticeThinkingData }) {
 	// 50%-italic quote block on expand. Legacy records' commit flag is
 	// deliberately unread (one lane now). A TRANSCRIPT row (owner round,
 	// 2026-10-07): full-width band + rail, arriving expanded.
-	return <ThinkingBlock testId="thinking-card" label="YOUR THINKING" text={data.text} defaultOpen />;
+	const label = typeof data.confidence === "number" ? `YOUR THINKING · ${data.confidence}% CONFIDENT` : "YOUR THINKING";
+	return <ThinkingBlock testId="thinking-card" label={label} text={data.text} defaultOpen />;
 }

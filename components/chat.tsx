@@ -498,10 +498,14 @@ export function Chat({
 	// the dock stays mounted (the problem is still active until the agent
 	// concludes).
 	const submitThinking = useCallback(
-		(text: string) => {
+		(text: string, confidence?: number) => {
 			const problem = activeProblemRef.current;
 			if (!problem) return;
-			void send({ type: "thinking", problemCallId: problem.toolCallId, text });
+			void send(
+				confidence === undefined
+					? { type: "thinking", problemCallId: problem.toolCallId, text }
+					: { type: "thinking", problemCallId: problem.toolCallId, text, confidence },
+			);
 		},
 		[send],
 	);

@@ -23,6 +23,7 @@ import { findTool } from "./find.ts";
 import { grepTool } from "./grep.ts";
 import { jobTools, type JobToolContext } from "./jobs.ts";
 import { proberGraphTools, type GraphToolContext } from "./graph.ts";
+import { reviewQueueTool, type ReviewToolContext } from "./review.ts";
 import { activeProblemOf } from "../../core/native-messages.ts";
 import type { LhMessage } from "../../core/native-messages.ts";
 import { concludeResult, invalidInputResult, problemResult } from "../tool-execute.ts";
@@ -44,6 +45,9 @@ export interface PracticeToolContext {
 	 *  Each absent context (tests) = absent from the registry. */
 	graph?: GraphToolContext;
 	jobs?: JobToolContext;
+	/** The spaced-repetition schedule reader (FSRS fork). Absent (tests) =
+	 *  no review_queue tool. */
+	review?: ReviewToolContext;
 }
 
 /** TURN-SCOPED GATE STATE (the BKT incident, 2026-10-05): the gates used
@@ -58,13 +62,23 @@ export interface PracticeToolContext {
  *  this closure — the intra-turn truth the record cannot hold yet. */
 export interface PracticeGate {
 	problemActive: boolean;
+	/** The active problem's target ids (FSRS fork): conclude must rate each
+	 *  of them — a tagged problem concluded without ratings would silently
+	 *  drop review evidence. Empty for untagged problems. */
+	activeTargets: string[];
+}
+
+function targetsOf(input: unknown): string[] {
+	const t = (input as { target?: unknown } | null | undefined)?.target;
+	return Array.isArray(t) ? t.filter((x): x is string => typeof x === "string") : [];
 }
 
 /** Seed the turn's gate from the record (result-aware activeProblemOf —
  *  only a cleanly-posed problem counts). */
 export function createPracticeGate(ctx: PracticeToolContext): PracticeGate {
 	const record = ctx.chatStore.getChat(ctx.chatId);
-	return { problemActive: record ? activeProblemOf(record.messages) !== null : false };
+	const active = record ? activeProblemOf(record.messages) : null;
+	return { problemActive: active !== null, activeTargets: active ? targetsOf(active.input) : [] };
 }
 
 // ─── problem: the pose ───────────────────────────────────────────────────────
@@ -155,6 +169,7 @@ export function problemTool(
 				}
 			}
 			gate.problemActive = true;
+			gate.activeTargets = targetsOf(input);
 			return problemResult();
 		},
 	};
@@ -192,11 +207,31 @@ export const concludeInputObject = Type.Object({
 		{ description: "REQUIRED — the miss classification: cue, discrimination, execution, careless, or structural — or null = no miss (bare, no quotes)." },
 	),
 	retest: Type.Boolean({ description: "REQUIRED — true marks the problem for a fresh-surface retest before the session ends." }),
+	ratings: Type.Optional(
+		Type.Array(
+			Type.Object({
+				target: Type.String({ description: "A proposition id (the session context's [id] list)." }),
+				rating: Type.Union([Type.Literal("again"), Type.Literal("hard"), Type.Literal("good"), Type.Literal("easy")], {
+					description: "The spaced-repetition grade for THIS proposition: again, hard, good, or easy (bare words).",
+				}),
+				reason: Type.String({ description: "One short line: why this grade, from the evidence of this problem." }),
+			}),
+			{
+				description:
+					"REQUIRED when the problem had targets — one spaced-repetition rating per target proposition (you may also rate " +
+					"other map propositions this problem clearly exercised). Each grade schedules that proposition's next review. " +
+					"Omit for untagged problems.",
+			},
+		),
+	),
 });
 
 export type ConcludeInput = Static<typeof concludeInputObject>;
 
-export function concludeTool(gate: PracticeGate): AgentTool<typeof concludeInputObject> {
+export function concludeTool(
+	gate: PracticeGate,
+	graphNodes?: PracticeToolContext["graphNodes"],
+): AgentTool<typeof concludeInputObject> {
 	return {
 		name: "conclude",
 		label: "conclude",
@@ -207,13 +242,52 @@ export function concludeTool(gate: PracticeGate): AgentTool<typeof concludeInput
 			"explicit go-ahead (a *Next problem* message, or their own words asking for the next one). Between problems, " +
 			"answer their questions about the concluded one. Nothing may conclude unless a problem is active.",
 		parameters: concludeInputObject,
-		prepareArguments: (args: unknown) => healEncodedArguments(args, concludeInputObject) as never,
+		prepareArguments: (args: unknown) => {
+			const healed = healEncodedArguments(args, concludeInputObject) as Record<string, unknown>;
+			// RATING TARGET NORMALIZATION (FSRS fork): names become ids — the
+			// review ledger keys on canonical proposition ids, exactly like
+			// the problem tool's targets. Unresolvable strings pass through
+			// for execute to reject; an empty list heals away.
+			const ratings = healed.ratings;
+			if (!Array.isArray(ratings)) return healed as never;
+			if (ratings.length === 0) return { ...healed, ratings: undefined } as never;
+			if (!graphNodes) return healed as never;
+			const list = graphNodes();
+			const normalized = ratings.map((r) =>
+				r && typeof r === "object" && typeof (r as { target?: unknown }).target === "string"
+					? { ...(r as object), target: resolveTargetId((r as { target: string }).target, list) ?? (r as { target: string }).target }
+					: r,
+			);
+			return { ...healed, ratings: normalized } as never;
+		},
 		executionMode: "sequential",
-		execute: async (_toolCallId, _input) => {
+		execute: async (_toolCallId, input) => {
 			if (!gate.problemActive) {
 				return invalidInputResult("conclude", ["no active problem to conclude — pose one first"]);
 			}
+			// RATING COMPLETENESS (owner, 2026-11-03): the grade VALUES are the
+			// agent's call, unconstrained — only the coverage is enforced, so
+			// review evidence is never dropped, and every rated target must be
+			// a real proposition.
+			const ratings = input.ratings ?? [];
+			const errors: string[] = [];
+			if (graphNodes && ratings.length > 0) {
+				const list = graphNodes();
+				const unknown = ratings.map((r) => r.target).filter((t) => resolveTargetId(t, list) === null);
+				if (unknown.length > 0) {
+					errors.push(`rating target ${JSON.stringify(unknown)} is not a known proposition — rate proposition ids from the session context`);
+				}
+			}
+			const rated = new Set(ratings.map((r) => r.target));
+			const missing = gate.activeTargets.filter((t) => !rated.has(t));
+			if (missing.length > 0) {
+				errors.push(
+					`ratings missing for target ${JSON.stringify(missing)} — this problem exercised them; give each one a rating (again, hard, good, or easy) with a one-line reason`,
+				);
+			}
+			if (errors.length > 0) return invalidInputResult("conclude", errors);
 			gate.problemActive = false;
+			gate.activeTargets = [];
 			return concludeResult();
 		},
 	};
@@ -237,7 +311,7 @@ export function practiceTools(ctx: PracticeToolContext): Record<string, AgentToo
 	// inner pass; the double heal is idempotent by construction.
 	return healToolRecord({
 		problem: problemTool(gate, ctx.graphNodes),
-		conclude: concludeTool(gate),
+		conclude: concludeTool(gate, ctx.graphNodes),
 		read: readTool,
 		ls: lsTool,
 		find: findTool,
@@ -245,5 +319,6 @@ export function practiceTools(ctx: PracticeToolContext): Record<string, AgentToo
 		...(jobs?.research ? { research: jobs.research } : {}),
 		...(jobs ? { pdf: jobs.pdf! } : {}),
 		...(ctx.graph ? proberGraphTools(ctx.graph) : {}),
+		...(ctx.review ? { review_queue: reviewQueueTool(ctx.review) } : {}),
 	});
 }
