@@ -26,7 +26,8 @@ import type {
 	ModelSlot,
 	RoleModelOverride,
 } from "../core/settings.ts";
-import { BACKGROUND_MODEL_ROLES, CACHE_RETENTIONS, COMPACTION_THRESHOLD_FLOOR, CUSTOM_MODEL_PIN_FLOOR, EXTRACTION_CHUNK_TOKENS_FLOOR, MODEL_SLOTS } from "../core/settings.ts";
+import { BACKGROUND_MODEL_ROLES, CACHE_RETENTIONS, COMPACTION_THRESHOLD_FLOOR, CUSTOM_MODEL_PIN_FLOOR, EXTRACTION_CHUNK_TOKENS_FLOOR, LEARNER_PROFILE_MAX_CHARS, MODEL_SLOTS } from "../core/settings.ts";
+import type { LearnerSettings } from "../core/settings.ts";
 import { WRITABLE_TOOL_KEYS } from "../core/pending.ts";
 import { isDictationLanguage } from "../core/dictation.ts";
 
@@ -405,6 +406,20 @@ export function parseDictationSettingsBody(body: unknown): SettingsBodyResult<Di
 	return { ok: true, settings: { language: raw.language } };
 }
 
+/** learner: { profile?: string ≤ LEARNER_PROFILE_MAX_CHARS } (fork). Strict
+ *  write side: an over-long profile is refused, not silently cut. */
+export function parseLearnerSettingsBody(body: unknown): SettingsBodyResult<LearnerSettings> {
+	const raw = asRecord(body);
+	if (!raw) return { ok: false, error: "Invalid JSON body" };
+	if (raw.profile === undefined) return { ok: true, settings: {} };
+	if (typeof raw.profile !== "string") return { ok: false, error: "profile must be a string" };
+	const profile = raw.profile.trim();
+	if (profile.length > LEARNER_PROFILE_MAX_CHARS) {
+		return { ok: false, error: `profile must be at most ${LEARNER_PROFILE_MAX_CHARS} characters` };
+	}
+	return { ok: true, settings: { profile } };
+}
+
 /** The custom endpoint's per-model pins (PATCH /api/custom-provider): the
  *  whole desired map, replace-whole like every section. Strict write side — a
  *  token count must be a whole number at or above the floor (the read side
@@ -456,6 +471,7 @@ export const SETTINGS_SECTIONS = {
 	models: parseModelsSettingsBody,
 	dictation: parseDictationSettingsBody,
 	claudeCode: parseClaudeCodeSettingsBody,
+	learner: parseLearnerSettingsBody,
 } as const;
 
 export type SettingsSectionName = keyof typeof SETTINGS_SECTIONS;

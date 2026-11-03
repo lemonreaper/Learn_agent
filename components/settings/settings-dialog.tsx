@@ -43,6 +43,7 @@ import { useAppearance } from "./appearance.tsx";
 import { SettingsSection } from "./controls.tsx";
 import { UpdateSettings } from "./update-settings.tsx";
 import { AgentSection } from "./agent-section.tsx";
+import { LearnerSection } from "./learner-section.tsx";
 import type { ModelsSettings } from "@/src/core";
 import { MENU_CLOSE_EVENT, MENU_OPEN_EVENT } from "@/components/menu-shell";
 import { notifySettingsSaved } from "@/components/settings-signal";
@@ -58,6 +59,7 @@ import { NativeSubscriptionUIProvider } from "./subscription-connections.tsx";
  *  real question users ask). */
 const SECTIONS = [
 	{ id: "keys", label: "Providers" },
+	{ id: "learner", label: "About me" },
 	{ id: "agent", label: "Agent" },
 	{ id: "appearance", label: "Appearance" },
 	{ id: "graph", label: "Graph" },
@@ -226,7 +228,7 @@ export function SettingsDialogBody({
 	 *  schema mistake caught by the validation surface). */
 	const write = useCallback(
 		async (
-			section: "general" | "agent" | "models" | "appearance" | "graph" | "compaction",
+			section: "general" | "agent" | "models" | "appearance" | "graph" | "compaction" | "learner",
 			body: object,
 		) => {
 			setError(null);
@@ -371,6 +373,14 @@ export function SettingsDialogBody({
 							{active === "keys" && (
 								<SettingsSection title="Providers" testid="section-keys">
 									<KeysSection initialRow={initialRow ?? undefined} />
+								</SettingsSection>
+							)}
+							{active === "learner" && (
+								<SettingsSection title="About me" testid="section-learner">
+									<LearnerSection
+										profile={record.learner?.profile ?? ""}
+										onSave={(profile) => write("learner", { profile })}
+									/>
 								</SettingsSection>
 							)}
 							{active === "agent" && (
