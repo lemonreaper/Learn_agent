@@ -185,16 +185,74 @@ export async function walkFiles(
 	return { timedOut, aborted };
 }
 
-/** True if the first 8KB chunk contains a NUL byte — pi/rg's binary skip. */
+/** True if the first 8KB chunk contains a NUL byte — pi/rg's binary skip.
+ *  UTF-16 text is NOT binary (fork fix, 2026-11-03): Windows PowerShell 5
+ *  redirection writes UTF-16 LE, full of NULs — those files were silently
+ *  skipped by grep. A sniffed UTF-16 prefix exempts the file. */
 export async function isBinaryFile(filePath: string): Promise<boolean> {
 	const handle = await fs.open(filePath, "r");
 	try {
 		const buf = Buffer.alloc(8192);
 		const { bytesRead } = await handle.read(buf, 0, 8192, 0);
-		return buf.subarray(0, bytesRead).includes(0);
+		const head = buf.subarray(0, bytesRead);
+		if (sniffUtf16(head) !== null) return false;
+		return head.includes(0);
 	} finally {
 		await handle.close();
 	}
+}
+
+/**
+ * UTF-16 detection (fork fix, 2026-11-03): a BOM decides; without one, the
+ * NUL pattern of mostly-ASCII text decides — in UTF-16 LE every ASCII char
+ * is followed by a 0x00 (odd offsets), in BE preceded by one (even
+ * offsets). Thresholds keep real binaries (NULs scattered both ways) out.
+ */
+export function sniffUtf16(buf: Uint8Array): "utf-16le" | "utf-16be" | null {
+	if (buf.length >= 2) {
+		if (buf[0] === 0xff && buf[1] === 0xfe) return "utf-16le";
+		if (buf[0] === 0xfe && buf[1] === 0xff) return "utf-16be";
+	}
+	const pairs = Math.floor(Math.min(buf.length, 4096) / 2);
+	if (pairs < 2) return null;
+	let evenNul = 0;
+	let oddNul = 0;
+	for (let i = 0; i < pairs; i++) {
+		if (buf[2 * i] === 0) evenNul++;
+		if (buf[2 * i + 1] === 0) oddNul++;
+	}
+	if (oddNul / pairs > 0.3 && evenNul / pairs < 0.05) return "utf-16le";
+	if (evenNul / pairs > 0.3 && oddNul / pairs < 0.05) return "utf-16be";
+	return null;
+}
+
+/**
+ * Decode a learner text file (fork fix, 2026-11-03). Every reader used to
+ * assume UTF-8, so UTF-16 files (PowerShell 5 `>` output) read as
+ * NUL-riddled garbage and legacy Russian Windows-1251 texts as U+FFFD.
+ * Order: BOM / UTF-16 sniff → UTF-8 (BOM stripped) → Windows-1251 when
+ * the UTF-8 reading is mostly replacement characters (the dominant legacy
+ * 8-bit encoding for this app's Cyrillic users; for other legacy encodings
+ * it is still a better fallback than a wall of U+FFFD).
+ */
+export function decodeText(buf: Uint8Array): string {
+	const utf16 = sniffUtf16(buf);
+	if (utf16 !== null) {
+		const hasBom = buf.length >= 2 && ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff));
+		return new TextDecoder(utf16).decode(hasBom ? buf.subarray(2) : buf);
+	}
+	const utf8 = new TextDecoder("utf-8", { ignoreBOM: false }).decode(buf);
+	// Fall back only when invalid sequences are SYSTEMIC: one torn byte in a
+	// real UTF-8 file (a truncated download) must not turn its Cyrillic into
+	// mojibake. In Windows-1251 Russian text nearly every non-ASCII byte is
+	// invalid UTF-8, so the replacement share of non-ASCII chars is high.
+	let bad = 0;
+	let nonAscii = 0;
+	for (const ch of utf8) {
+		if (ch.codePointAt(0)! > 0x7f) nonAscii++;
+		if (ch === "�") bad++;
+	}
+	return bad > 0 && bad / nonAscii > 0.3 ? new TextDecoder("windows-1251").decode(buf) : utf8;
 }
 
 /** pi's GREP_MAX_LINE_LENGTH line truncation (no mid-word care, hard cap). */
