@@ -3,6 +3,10 @@ name: Desktop release
 on:
   push:
     tags: ["v*"]
+    # FORK (Learn_agent, 2026-11-03): this repository's automation cannot
+    # push tags, so a push to release-tag/v<version> starts the same release
+    # path. The tag itself is created by GitHub when the draft is published.
+    branches: ["release-tag/v*"]
   # Manual runs are artifact-only, unsigned, and NEVER create a release.
   # Use this for the first Windows/Linux dress rehearsal without secrets.
   workflow_dispatch:
@@ -36,7 +40,8 @@ jobs:
           node --input-type=module -e '
             import fs from "node:fs";
             const {version} = JSON.parse(fs.readFileSync("package.json", "utf8"));
-            if (process.env.GITHUB_REF_NAME !== `v${version}`) {
+            const tag = process.env.GITHUB_REF_NAME.replace(/^release-tag\//, "");
+            if (tag !== `v${version}`) {
               console.error("Release tag must equal v" + version);
               process.exit(1);
             }
@@ -61,7 +66,7 @@ jobs:
         with:
           script: |
             const {owner, repo} = context.repo;
-            const tag = context.ref.replace(/^refs\/tags\//, "");
+            const tag = context.ref.replace(/^refs\/(?:tags|heads\/release-tag)\//, "");
             const version = tag.slice(1);
             const releases = await github.paginate(github.rest.repos.listReleases, {
               owner, repo, per_page: 100,
@@ -80,6 +85,8 @@ jobs:
             }
             const {data} = await github.rest.repos.createRelease({
               owner, repo, tag_name: tag, name: version, draft: true,
+              // Branch-started fork releases: pin the future tag to the built commit.
+              ...(context.ref.startsWith("refs/tags/") ? {} : {target_commitish: context.sha}),
             });
             core.info(`Created draft ${data.id} for ${tag}`);
 
@@ -267,7 +274,7 @@ jobs:
         run: gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" > "$RUNNER_TEMP/releases.json"
       - name: Select the tag's single draft
         # Machine JSON on stdout (release id + asset ids); warnings on stderr.
-        run: npx tsx scripts/verify-release.ts select "$RUNNER_TEMP/releases.json" --tag "$GITHUB_REF_NAME" > "$RUNNER_TEMP/draft.json"
+        run: npx tsx scripts/verify-release.ts select "$RUNNER_TEMP/releases.json" --tag "${GITHUB_REF_NAME#release-tag/}" > "$RUNNER_TEMP/draft.json"
       - name: Download the three update feeds
         env:
           GH_TOKEN: ${{ github.token }}
@@ -286,4 +293,4 @@ jobs:
             echo "downloaded $name ($(wc -c < "$RUNNER_TEMP/metadata/$name") bytes)"
           done
       - name: Verify draft assets and update feeds
-        run: npx tsx scripts/verify-release.ts verify "$RUNNER_TEMP/releases.json" "$RUNNER_TEMP/metadata" --tag "$GITHUB_REF_NAME"
+        run: npx tsx scripts/verify-release.ts verify "$RUNNER_TEMP/releases.json" "$RUNNER_TEMP/metadata" --tag "${GITHUB_REF_NAME#release-tag/}"

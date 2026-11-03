@@ -347,7 +347,10 @@ describe("release gate — workflow wiring", () => {
 		const select = verify.steps.find((step: any) => step.run?.includes("verify-release.ts select"));
 		const final = verify.steps.find((step: any) => step.run?.includes("verify-release.ts verify"));
 		assert.ok(select && final);
-		assert.match(final.run, /--tag "\$GITHUB_REF_NAME"/);
+		// Fork (Learn_agent): a release-tag/v<version> branch push maps to the
+		// same tag as a v<version> tag push — the prefix is stripped in shell.
+		assert.match(final.run, /--tag "\$\{GITHUB_REF_NAME#release-tag\/\}"/);
+		assert.match(select.run, /--tag "\$\{GITHUB_REF_NAME#release-tag\/\}"/);
 		// The gate's own job: nothing here may create, edit, publish, or delete.
 		for (const step of verify.steps) {
 			assert.equal(step.run?.includes("create") ?? false, false, String(step.name));
