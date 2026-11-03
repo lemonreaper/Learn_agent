@@ -3,7 +3,7 @@ import { Type } from "typebox";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute, type ImageFileResult } from "../tool-execute.ts";
-import { resolveSourcePath } from "./fs-shared.ts";
+import { decodeText, resolveSourcePath } from "./fs-shared.ts";
 import { detectSupportedImageMimeTypeFromFile, processImage } from "../image-processing/index.ts";
 
 /**
@@ -115,7 +115,7 @@ export function createReadTool(model?: ReadModel): AgentTool<typeof readInput> {
 					...(processed.ok ? { images: [{ data: processed.data, mimeType: processed.mimeType }] } : {}),
 				};
 			}
-			return readTextSlice(buffer.toString("utf-8"), offset, limit);
+			return readTextSlice(decodeText(buffer), offset, limit);
 		}),
 	};
 }

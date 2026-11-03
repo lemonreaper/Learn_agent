@@ -5,6 +5,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
 import {
 	capOutput,
+	decodeText,
 	formatSize,
 	GREP_MAX_LINE_LENGTH,
 	isBinaryFile,
@@ -128,7 +129,7 @@ export const grepTool: AgentTool<typeof grepInput> = {
 
 			let content: string;
 			try {
-				content = await fs.readFile(filePath, "utf-8");
+				content = decodeText(await fs.readFile(filePath));
 			} catch {
 				continue;
 			}
