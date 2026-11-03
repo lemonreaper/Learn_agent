@@ -340,6 +340,23 @@ export interface DictationSettings {
 	language?: DictationLanguage;
 }
 
+/** THE LEARNER PROFILE (fork, 2026-11-03): who the learner is — field,
+ *  job, goals — in his own words. Composed into every conversation
+ *  agent's system prompt (prober, teacher, practice) so sessions plan
+ *  toward his direction without re-explaining it. Context, not knowledge:
+ *  it never enters the knowledge graph, and the probe still measures. */
+export interface LearnerSettings {
+	profile?: string;
+}
+
+/** Profile length cap — it rides every model call, so keep it a brief. */
+export const LEARNER_PROFILE_MAX_CHARS = 4000;
+
+/** Normalize a profile: trimmed, capped; non-strings become "". */
+export function sanitizeLearnerProfile(v: unknown): string {
+	return typeof v === "string" ? v.trim().slice(0, LEARNER_PROFILE_MAX_CHARS) : "";
+}
+
 /** Agent settings — everything about the non-conversation machinery. */
 export interface AgentSettings {
 	/** Background-role model/thinking overrides (absent role = config pin). */
@@ -467,6 +484,8 @@ export interface UserSettings {
 	version: number;
 	general?: GeneralSettings;
 	dictation?: DictationSettings;
+	/** The learner profile (fork) — composed into every conversation agent's prompt. */
+	learner?: LearnerSettings;
 	/** Explicit app-wide opt-in; absent/invalid is off, including older records. */
 	claudeCode?: { enabled?: boolean };
 	agent?: AgentSettings;
@@ -489,6 +508,7 @@ export interface FactorySettings {
 	version: number;
 	general: Required<GeneralSettings>;
 	dictation: Required<DictationSettings>;
+	learner: Required<LearnerSettings>;
 	appearance: {
 		mode: "dark" | "light";
 		background: string | null;
@@ -509,6 +529,7 @@ export const FACTORY_SETTINGS: FactorySettings = {
 	version: CURRENT_SETTINGS_VERSION,
 	general: { autoUpdate: true },
 	dictation: { language: "en" },
+	learner: { profile: "" },
 	appearance: {
 		mode: "dark",
 		background: null, // the dark default (#141414) lives in the mode's derivation curve
@@ -811,6 +832,13 @@ export function sanitizeUserSettings(raw: unknown): UserSettings | null {
 		out.dictation = raw !== null && typeof raw === "object" && !Array.isArray(raw) &&
 			isDictationLanguage((raw as Record<string, unknown>).language)
 			? { language: (raw as DictationSettings).language }
+			: {};
+	}
+	if (r.learner !== undefined) {
+		const raw = r.learner;
+		out.learner = raw !== null && typeof raw === "object" && !Array.isArray(raw) &&
+			typeof (raw as Record<string, unknown>).profile === "string"
+			? { profile: sanitizeLearnerProfile((raw as Record<string, unknown>).profile) }
 			: {};
 	}
 	if (r.claudeCode !== undefined) {

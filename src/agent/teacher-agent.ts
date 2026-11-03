@@ -123,6 +123,10 @@ export interface AgentBuildOptions {
 	 *  fresh per turn, honoring enabled overrides (switch on + file
 	 *  exists); absent → the cached pure-source composition. */
 	promptSwitches?: Record<string, boolean>;
+	/** The learner profile (fork, 2026-11-03): settings' learner.profile,
+	 *  appended to the system prompt as standing context. Empty/absent =
+	 *  no section (the prompt is byte-identical to upstream's). */
+	learnerProfile?: string;
 	/** Native conversation identity: the existing persisted chat id, reused
 	 * across reconstructed prober, teacher, and practice Agents.
 	 * Debug: when set AND LH_PROVIDER_EVENTS=1, raw provider stream events
@@ -176,6 +180,28 @@ function makeQuestionStopper(kind: AgentKind) {
 	};
 }
 
+/**
+ * THE LEARNER PROFILE SECTION (fork, 2026-11-03): who the learner is, in
+ * his own words, appended LAST so the stable doctrine above stays a
+ * cacheable prefix and the profile changes only when he edits it. It is
+ * context for planning and examples — never evidence of what he knows.
+ */
+export function withLearnerProfile(prompt: string, profile: string | undefined): string {
+	const p = profile?.trim();
+	if (!p) return prompt;
+	return [
+		prompt,
+		"---",
+		"## The learner — standing context",
+		"",
+		"The learner wrote this about himself (his field, work, and goals). It is the same in every session, so he will not repeat it. Use it to aim what you do: what to prioritize, how to sequence a plan toward his goals, which examples, applications and problem surfaces connect to his work and studies, and what level of rigor his goals call for. It is context, not evidence of knowledge — a job title or a course does not show that he knows any particular proposition, so measure and teach exactly as you otherwise would. Do not recite it back to him or comment on it; let it shape the choices.",
+		"",
+		"<learner_profile>",
+		p,
+		"</learner_profile>",
+	].join("\n");
+}
+
 function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[]) {
 	// Practice never reaches the role fallback (the handler ALWAYS injects
 	// the session's conversation engine — practice rides the same
@@ -183,9 +209,10 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 	// ("practice" is not a ModelRole) honest about that.
 	const engine = opts.engine ?? piEngineFor(kind as "prober" | "teacher");
 	const stopper = makeQuestionStopper(kind);
-	const systemPrompt = opts.promptSwitches
+	const basePrompt = opts.promptSwitches
 		? composeInstructions(kind, opts.promptSwitches)
 		: composedInstructions[kind]!;
+	const systemPrompt = withLearnerProfile(basePrompt, opts.learnerProfile);
 	// Debug recorder (owner, 2026-10-04): raw provider events when
 	// LH_PROVIDER_EVENTS=1 and the caller handed a chatId; undefined is
 	// the normal no-observer path (tests, env-off).
