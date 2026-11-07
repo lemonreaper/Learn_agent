@@ -7,16 +7,45 @@ import type { AdmissionScope, ChatGPTDispatchLifecycle } from "./chatgpt-request
 import { capturePreparedBackgroundPayload } from "./background-capture.ts";
 
 const USAGE = "https://chatgpt.com/settings/usage";
+
+/**
+ * A SAFE diagnostic code from a provider error (fork, 2026-11-07): never
+ * provider prose (the redaction rule stands), only machine tokens — a
+ * snake_case error code, a Node/undici network code, or an HTTP status.
+ * The catch-all message used to hide the real cause entirely.
+ */
+export function chatGPTErrorCode(message: string): string | null {
+	return message.match(/\b[a-z]+(?:_[a-z]+){1,6}\b/)?.[0]
+		?? message.match(/\b(?:E[A-Z]{3,}|UND_ERR_[A-Z_]+)\b/)?.[0]
+		?? message.match(/\b[45]\d\d\b/)?.[0]
+		?? null;
+}
+
 export function chatGPTStreamError(message: string): string {
-	if (/subscription_sharing_usage_limit_exceeded|quota|429/.test(message)) return `ChatGPT plan usage limit reached. Manage usage at ${USAGE}. No API-key fallback was used.`;
+	// FORK (2026-11-07): more plan-limit codes. ChatGPT plan limits surface
+	// as usage_limit_reached / rate_limit_exceeded too, not only
+	// subscription_sharing_usage_limit_exceeded — those fell through to the
+	// generic "request failed" and looked like a connection problem.
+	if (/subscription_sharing_usage_limit_exceeded|usage_limit|rate_limit|quota|429/.test(message)) return `ChatGPT plan usage limit reached. Manage usage at ${USAGE}. No API-key fallback was used.`;
+	// FORK: a session that outgrew the model's window — BEFORE the /model/
+	// check below, whose wording ("model's maximum context length") would
+	// otherwise report a healthy model as unavailable.
+	if (/context_length_exceeded|context window|maximum context|context length|too many tokens/i.test(message)) return "This session is now too long for the selected ChatGPT model's context window. Start a new session, or lower the compaction threshold in Settings → Agent so the history gets summarized sooner. No API-key fallback was used.";
 	if (/scope|authorization_context|permission/.test(message)) return "ChatGPT plan permission is missing. Reconnect in Providers and authorize plan use. No API-key fallback was used.";
 	if (/expired|invalid_grant|401|invalid_user/.test(message)) return "Your ChatGPT session expired. Reconnect in Providers. No API-key fallback was used.";
 	if (/background|Background/.test(message)) return "ChatGPT background use is off in this app. Enable Allow background use for all ChatGPT accounts in Providers to run this work. No API-key fallback was used.";
 	if (/eligible|403/.test(message)) return "This ChatGPT account or workspace does not permit this request. Check ChatGPT settings; reconnecting may not change eligibility.";
+	// FORK: the app could not reach OpenAI at all — in practice a VPN that
+	// dropped or covers only the browser (the app's requests do not follow a
+	// system proxy). Checked BEFORE cancel/closed, which "socket closed" hits.
+	if (/fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR|socket|network|getaddrinfo|certificate|TLS/i.test(message)) return "Could not reach OpenAI from this computer. If you use a VPN, make sure it is connected and routes ALL traffic (TUN / full tunnel), then retry. No API-key fallback was used.";
 	if (/cancel|abort|closed|disconnect/i.test(message)) return "ChatGPT request cancelled or connection closed. No API-key fallback was used.";
+	// FORK: OpenAI-side failures — nothing to fix locally.
+	if (/\b5\d\d\b|server_error|overloaded|service_unavailable|temporarily unavailable/i.test(message)) return "OpenAI had a server error. Retry in a minute. No API-key fallback was used.";
 	if (/catalog|model/.test(message)) return "The selected model is unavailable for this ChatGPT account. Refresh Providers and explicitly choose an available model. No API-key fallback was used.";
 	if (/incomplete|terminal|interrupted|stop reason/.test(message)) return "ChatGPT returned an incomplete response. Retry when ready; no API-key fallback was used.";
-	return "ChatGPT request failed. Check your connection and ChatGPT usage, then retry. No API-key fallback was used.";
+	const code = chatGPTErrorCode(message);
+	return `ChatGPT request failed${code ? ` (code: ${code})` : ""}. Check your connection and ChatGPT usage, then retry. No API-key fallback was used.`;
 }
 
 /** Restrict the body at the final payload seam, even if caller samplingParams add fields. */

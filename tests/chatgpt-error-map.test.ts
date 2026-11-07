@@ -1,0 +1,64 @@
+/**
+ * ChatGPT error mapping (fork, 2026-11-07). A learner hit the catch-all
+ * "ChatGPT request failed" repeatedly with no way to tell why: plan-limit,
+ * context-overflow, network and server errors all fell through to it. The
+ * map now names them, and the catch-all carries a SAFE machine code (never
+ * provider prose — the redaction rule in chatgpt-stream.test.ts stands).
+ */
+
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { chatGPTErrorCode, chatGPTStreamError } from "../src/agent/chatgpt-stream.ts";
+
+describe("chatGPTStreamError — named causes", () => {
+	it("plan limits under every code, not only subscription_sharing_*", () => {
+		for (const m of ["usage_limit_reached", "rate_limit_exceeded", "OpenAI API error 429", "subscription_sharing_usage_limit_exceeded"]) {
+			assert.match(chatGPTStreamError(m), /usage limit reached/, m);
+		}
+	});
+
+	it("context overflow is named — and is NOT reported as an unavailable model", () => {
+		const m = "400 context_length_exceeded: This model's maximum context length is 400000 tokens";
+		const out = chatGPTStreamError(m);
+		assert.match(out, /too long for the selected ChatGPT model's context window/);
+		assert.doesNotMatch(out, /unavailable/);
+	});
+
+	it("network failures point at the VPN, even when the text says 'closed'", () => {
+		for (const m of ["fetch failed", "ECONNRESET", "connect ETIMEDOUT 104.18.1.1:443", "UND_ERR_SOCKET other side closed", "getaddrinfo ENOTFOUND api.openai.com"]) {
+			assert.match(chatGPTStreamError(m), /Could not reach OpenAI/, m);
+		}
+	});
+
+	it("OpenAI server errors", () => {
+		for (const m of ["OpenAI API error 502", "server_error", "The engine is currently overloaded"]) {
+			assert.match(chatGPTStreamError(m), /server error/, m);
+		}
+	});
+
+	it("the upstream mappings still hold", () => {
+		assert.match(chatGPTStreamError("invalid_grant"), /session expired/);
+		assert.match(chatGPTStreamError("cancelled or catalog authority changed"), /cancelled/);
+		assert.match(chatGPTStreamError("ChatGPT account catalog has no selected model"), /unavailable/);
+		assert.match(chatGPTStreamError("incomplete terminal response"), /incomplete response/);
+	});
+});
+
+describe("the catch-all carries a safe code, never provider prose", () => {
+	it("snake_case code, Node code, or HTTP status — nothing else", () => {
+		assert.equal(chatGPTErrorCode("invalid_request_error: secret scratch provider diagnostic"), "invalid_request_error");
+		assert.equal(chatGPTErrorCode("EPROTO something"), "EPROTO");
+		assert.equal(chatGPTErrorCode("status 418 secret words"), "418");
+		assert.equal(chatGPTErrorCode("secret scratch provider diagnostic"), null);
+	});
+
+	it("the message shows the code and drops the prose", () => {
+		const out = chatGPTStreamError("invalid_request_error: secret scratch provider diagnostic");
+		assert.match(out, /^ChatGPT request failed \(code: invalid_request_error\)\./);
+		assert.doesNotMatch(out, /secret/);
+		assert.equal(
+			chatGPTStreamError("something odd happened"),
+			"ChatGPT request failed. Check your connection and ChatGPT usage, then retry. No API-key fallback was used.",
+		);
+	});
+});
