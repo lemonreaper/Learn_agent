@@ -21,7 +21,29 @@ export function chatGPTErrorCode(message: string): string | null {
 		?? null;
 }
 
-export function chatGPTStreamError(message: string): string {
+/** Transport timing for a failed ChatGPT request (fork, 2026-11-08): which
+ *  stage broke and how long after dispatch / after the last received bytes —
+ *  enough to tell a VPN idle timeout (~a minute of silence) from Node's
+ *  5-minute body timeout or a refused connection. Numbers only, no prose. */
+export interface ChatGPTTransportTrace {
+	stage: "connect" | "stream";
+	code: string | null;
+	elapsedS: number;
+	idleS: number | null;
+	bytes: number;
+}
+
+export function describeTrace(t: ChatGPTTransportTrace): string {
+	const parts = [
+		t.code ? `code: ${t.code}` : null,
+		t.stage === "connect"
+			? `connection failed after ${t.elapsedS} s`
+			: `stream cut after ${t.elapsedS} s${t.idleS !== null ? `, ${t.idleS} s after the last data` : ""}, ${t.bytes} bytes received`,
+	].filter(Boolean);
+	return parts.join("; ");
+}
+
+export function chatGPTStreamError(message: string, trace?: ChatGPTTransportTrace | null): string {
 	// FORK (2026-11-07): more plan-limit codes. ChatGPT plan limits surface
 	// as usage_limit_reached / rate_limit_exceeded too, not only
 	// subscription_sharing_usage_limit_exceeded — those fell through to the
@@ -45,7 +67,13 @@ export function chatGPTStreamError(message: string): string {
 	// fetch seam (networkCodeOf) and appended to the message.
 	if (/fetch failed|connection error|timed out|terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR|socket|network|getaddrinfo|certificate|TLS/i.test(message)) {
 		const code = chatGPTErrorCode(message);
-		return `Could not reach OpenAI from this computer${code ? ` (code: ${code})` : ""}. If you use a VPN, make sure it is connected and routes ALL traffic (TUN / full tunnel), then retry. No API-key fallback was used.`;
+		const detail = trace ? describeTrace({ ...trace, code: trace.code ?? code }) : code ? `code: ${code}` : "";
+		// A stream that started and was then cut is not "could not reach" —
+		// the request DID reach OpenAI; something on the path dropped it.
+		if (trace?.stage === "stream") {
+			return `The connection to OpenAI was cut while the answer was streaming (${detail}). A VPN or network that closes quiet connections does this during long thinking — try a lower thinking level, another VPN server, or retry. No API-key fallback was used.`;
+		}
+		return `Could not reach OpenAI from this computer${detail ? ` (${detail})` : ""}. If you use a VPN, make sure it is connected and routes ALL traffic (TUN / full tunnel), then retry. No API-key fallback was used.`;
 	}
 	if (/cancel|abort|closed|disconnect/i.test(message)) return "ChatGPT request cancelled or connection closed. No API-key fallback was used.";
 	// FORK: OpenAI-side failures — nothing to fix locally.
@@ -105,6 +133,12 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 			let committed = false;
 			let terminal = false;
 			let networkCode: string | null = null;
+			// FORK (2026-11-08): transport timing for the failure message.
+			let trace: ChatGPTTransportTrace | null = null;
+			let dispatchedAt = 0;
+			let lastDataAt = 0;
+			let bytes = 0;
+			const secs = (from: number) => Math.round((Date.now() - from) / 1000);
 			const check = () => { if (signal.aborted || !scope || !chatGPTScopeCurrent(scope)) throw new Error("cancelled or catalog authority changed"); };
 			try {
 				if (logicalModel.provider !== "chatgpt") throw new Error("ChatGPT account catalog has no selected model");
@@ -127,12 +161,39 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 						if (committed) throw new Error("ChatGPT does not retry admitted requests");
 						lifecycle?.beforeDispatch(scope!);
 						committed = true;
-						// FORK: keep the transport's machine code before the SDK
-						// replaces the error with "Connection error.".
-						return delegate(input, init).catch((err: unknown) => {
-							networkCode = networkCodeOf(err);
-							throw err;
-						});
+						// FORK: keep the transport's machine code and timing before
+						// the SDK replaces the error with "Connection error." — at
+						// connect time AND while the body streams ("terminated").
+						dispatchedAt = Date.now();
+						return delegate(input, init).then(
+							(res) => {
+								lastDataAt = Date.now();
+								if (!res.body) return res;
+								const reader = res.body.getReader();
+								const body = new ReadableStream<Uint8Array>({
+									async pull(ctrl) {
+										try {
+											const { done, value } = await reader.read();
+											if (done) return ctrl.close();
+											lastDataAt = Date.now();
+											bytes += value.byteLength;
+											ctrl.enqueue(value);
+										} catch (err) {
+											networkCode = networkCodeOf(err);
+											trace = { stage: "stream", code: networkCode, elapsedS: secs(dispatchedAt), idleS: secs(lastDataAt), bytes };
+											ctrl.error(err);
+										}
+									},
+									cancel: (reason) => reader.cancel(reason),
+								});
+								return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+							},
+							(err: unknown) => {
+								networkCode = networkCodeOf(err);
+								trace = { stage: "connect", code: networkCode, elapsedS: secs(dispatchedAt), idleS: null, bytes: 0 };
+								throw err;
+							},
+						);
 					},
 					onPayload: async (raw, model) => {
 						const replacement = await options?.onPayload?.(raw, model);
@@ -164,7 +225,11 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 				if (terminal) return;
 				if (!committed) lifecycle?.noDispatch(await chatGPTDenial(scope, controller, options?.signal?.aborted === true, purpose));
 				const raw = err instanceof Error ? err.message : "";
-				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: chatGPTStreamError(networkCode ? `${raw} ${networkCode}` : raw) };
+				// The learner's OWN local log (userData/logs/main.log via the
+				// desktop shell's stdout forwarding) gets the unmasked detail;
+				// the UI keeps the redacted, actionable message.
+				if (!signal.aborted) console.error(`[chatgpt] request failed: ${raw.slice(0, 500)}`, trace ? describeTrace(trace) : "(no transport trace)");
+				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: chatGPTStreamError(networkCode ? `${raw} ${networkCode}` : raw, trace) };
 				output.push({ type: "error", reason: partial.stopReason as "error" | "aborted", error: partial });
 			} finally { release(); output.end(); }
 		})();

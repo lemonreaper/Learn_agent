@@ -225,7 +225,33 @@ test("fork: a transport failure is named, with the network code the SDK hides", 
 		const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
 		const result = await engine.streamFn(engine.model, context()).result();
 		assert.equal(result.stopReason, "error");
-		assert.match(result.errorMessage ?? "", /^Could not reach OpenAI from this computer \(code: ECONNRESET\)\./);
+		assert.match(result.errorMessage ?? "", /^Could not reach OpenAI from this computer \(code: ECONNRESET; connection failed after \d+ s\)\./);
+	} finally {
+		globalThis.fetch = stubbed;
+	}
+});
+
+test("fork: a stream cut mid-answer is named as such, with code, timing and bytes", async () => {
+	const stubbed = globalThis.fetch;
+	globalThis.fetch = async () => {
+		const first = new TextEncoder().encode(`data: ${JSON.stringify({ type: "response.created", response: { id: "resp_cut" } })}\n\n`);
+		let sent = false;
+		const body = new ReadableStream<Uint8Array>({
+			pull(ctrl) {
+				if (!sent) { sent = true; ctrl.enqueue(first); return; }
+				ctrl.error(new TypeError("terminated", { cause: { code: "UND_ERR_SOCKET" } }));
+			},
+		});
+		return new Response(body, { headers: { "content-type": "text/event-stream" } });
+	};
+	try {
+		const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+		const result = await engine.streamFn(engine.model, context()).result();
+		assert.equal(result.stopReason, "error");
+		assert.match(
+			result.errorMessage ?? "",
+			/^The connection to OpenAI was cut while the answer was streaming \(code: UND_ERR_SOCKET; stream cut after \d+ s, \d+ s after the last data, \d+ bytes received\)\./,
+		);
 	} finally {
 		globalThis.fetch = stubbed;
 	}
