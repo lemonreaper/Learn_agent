@@ -8,7 +8,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { chatGPTErrorCode, chatGPTStreamError, networkCodeOf } from "../src/agent/chatgpt-stream.ts";
+import { chatGPTErrorCode, chatGPTStreamError, describeTrace, networkCodeOf } from "../src/agent/chatgpt-stream.ts";
 
 describe("networkCodeOf — the transport code the SDK would hide", () => {
 	it("reads undici's cause.code, a nested cause, or err.code; never prose", () => {
@@ -78,5 +78,20 @@ describe("the catch-all carries a safe code, never provider prose", () => {
 			chatGPTStreamError("something odd happened"),
 			"ChatGPT request failed. Check your connection and ChatGPT usage, then retry. No API-key fallback was used.",
 		);
+	});
+});
+
+describe("transport trace in the message (0.4.6)", () => {
+	it("connect failures say how long the attempt took", () => {
+		const out = chatGPTStreamError("Connection error.", { stage: "connect", code: "ECONNREFUSED", elapsedS: 3, idleS: null, bytes: 0 });
+		assert.match(out, /^Could not reach OpenAI from this computer \(code: ECONNREFUSED; connection failed after 3 s\)\./);
+	});
+	it("a mid-stream cut is NOT 'could not reach' — it names the cut and the silence before it", () => {
+		const out = chatGPTStreamError("terminated", { stage: "stream", code: null, elapsedS: 75, idleS: 61, bytes: 2048 });
+		assert.match(out, /^The connection to OpenAI was cut while the answer was streaming \(stream cut after 75 s, 61 s after the last data, 2048 bytes received\)\./);
+		assert.match(out, /lower thinking level/);
+	});
+	it("describeTrace is numbers and codes only", () => {
+		assert.equal(describeTrace({ stage: "stream", code: "UND_ERR_BODY_TIMEOUT", elapsedS: 300, idleS: 300, bytes: 512 }), "code: UND_ERR_BODY_TIMEOUT; stream cut after 300 s, 300 s after the last data, 512 bytes received");
 	});
 });
