@@ -6,6 +6,7 @@ import { usageWasAdmitted } from "../subscription-request-cycle.ts";
 import { providerEventObserver } from "../provider-events.ts";
 import { backgroundCaptureStream, createBackgroundCapture } from "../background-capture.ts";
 import type { ModelRole } from "../../../config.ts";
+import { currentLogLabel, logEvent, withLogContext } from "../request-log.ts";
 
 /**
  * The shared sub-agent runner (docs/pi-engine-swap.md §6): one helper every
@@ -63,6 +64,35 @@ export function subagentEngine(role: ModelRole, override?: PiEngine): PiEngine {
 }
 
 export async function runSubagent(tools: AgentTool<any, any>[], opts: SubagentRunOptions): Promise<SubagentRunResult> {
+	// FORK (0.4.7): label every model request this run makes, and log the
+	// run's own start / steps / end (request-log.ts).
+	const label = currentLogLabel() === "unlabeled" && opts.chatId ? `${opts.role} ${opts.chatId}` : opts.role;
+	return withLogContext(label, async () => {
+		const startedAt = Date.now();
+		let steps = 0;
+		const tag = `[agent ${opts.role}]`;
+		logEvent(`${tag} start · ${currentLogLabel()} · max ${opts.maxTurns} turns`);
+		try {
+			const result = await runSubagentInner(tools, {
+				...opts,
+				onAssistantMessage: (m, step) => {
+					steps = step;
+					const called = m.content.filter((c) => c.type === "toolCall").map((c) => (c as { name: string }).name);
+					logEvent(`${tag} step ${step} · stop ${m.stopReason}${called.length ? ` · tools: ${called.join(", ")}` : " · no tool calls"}`);
+					opts.onAssistantMessage?.(m, step);
+				},
+			});
+			logEvent(`${tag} finished after ${((Date.now() - startedAt) / 1000).toFixed(1)} s · ${steps} step${steps === 1 ? "" : "s"}`);
+			return result;
+		} catch (err) {
+			const msg = err instanceof Error ? `${err.name === "AbortError" ? "aborted" : err.message}` : String(err);
+			logEvent(`${tag} failed after ${((Date.now() - startedAt) / 1000).toFixed(1)} s · ${steps} completed step${steps === 1 ? "" : "s"} · ${msg.slice(0, 500)}`);
+			throw err;
+		}
+	});
+}
+
+async function runSubagentInner(tools: AgentTool<any, any>[], opts: SubagentRunOptions): Promise<SubagentRunResult> {
 	const engine = subagentEngine(opts.role, opts.engine);
 	let turns = 0;
 	// Debug recorder (owner, 2026-10-04): raw provider events per job run.

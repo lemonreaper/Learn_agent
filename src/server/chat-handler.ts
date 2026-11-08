@@ -1,4 +1,5 @@
 import type { Usage } from "@earendil-works/pi-ai";
+import { withLogContext } from "../agent/request-log.ts";
 import {
 	createPracticeAgent,
 	createProberAgent,
@@ -192,7 +193,16 @@ export async function handleChatRequest(
  * agent turn as a background object. Also the wake pipeline's entry
  * (TurnInput's steer kind appends the marker under the same claim).
  */
-export async function handleChatInput(
+export function handleChatInput(
+	chatId: string,
+	input: TurnInput,
+	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
+): Promise<Response> {
+	// FORK (0.4.7): label this turn's model requests in main.log.
+	return withLogContext(`chat ${chatId} (${input.type})`, () => handleChatInputTurn(chatId, input, buildAgent));
+}
+
+async function handleChatInputTurn(
 	chatId: string,
 	input: TurnInput,
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
