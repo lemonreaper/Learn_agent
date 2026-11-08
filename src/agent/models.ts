@@ -22,6 +22,7 @@ import { createClaudeCodeProvider } from "./claude-code/provider.ts";
 import { streamClaudeCode } from "./claude-code/stream.ts";
 import { nativeSubscriptionId, nativeSubscriptionModel } from "./subscription-bridge.ts";
 import { nativeSubscriptionStream } from "./subscription-stream.ts";
+import { tracedStreamFn } from "./request-log.ts";
 
 /** App identity is immutable and shared by Models and every native Agent.
  * Agent's default Pi attribution otherwise overrides the Models identity. */
@@ -156,7 +157,9 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 		// The agent loop forwards state.thinkingLevel as `reasoning` (undefined
 		// = off on pi-ai's scale). Built-ins keep the factory clamp; custom
 		// requests re-resolve thinking against their current metadata below.
-		streamFn: (requestModel, context, options) => {
+		// FORK (0.4.7): every production request is traced into main.log
+		// (request-log.ts) — dispatch, headers, heartbeat, how the body ended.
+		streamFn: tracedStreamFn((requestModel, context, options) => {
 			// Read the slot preference for every operation, not just engine creation.
 			// Unset adds NOTHING: native defaults/env and explicit caller options survive.
 			const retention = cacheRetention?.();
@@ -181,7 +184,7 @@ export function piEngineForSpec(spec: ResolvedModelSpec, background: boolean | (
 			const purpose = typeof background === "function" ? background : () => background;
 			const stream = spec.provider === "chatgpt" ? chatGPTStream(purpose, lifecycle) : nativeId ? nativeSubscriptionStream(models.getProvider(nativeId)!, purpose, lifecycle) : models.streamSimple.bind(models);
 			return stream(requestModel, context, requestOptions);
-		},
+		}),
 	};
 }
 

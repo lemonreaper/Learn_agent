@@ -20,6 +20,7 @@ import {
 	type VisualToolInput,
 } from "../../core/contracts.ts";
 import { registerJobAbort, unregisterJobAbort } from "./aborts.ts";
+import { logEvent, withLogContext } from "../request-log.ts";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -258,9 +259,17 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			await refuse(keyRefusal.error);
 			return;
 		}
+		// FORK (0.4.7): job lifecycle + a label on every model request it makes.
+		const startedAt = Date.now();
+		logEvent(`[job ${jobId}] start · ${job.kind} · chat ${job.chatId} · ${engine.model.provider}/${engine.model.id}`);
 		try {
-			await run(jobId, engine, input, makeLoopContext(jobId, engine));
+			await withLogContext(`job ${jobId} ${job.kind}`, () => run(jobId, engine, input, makeLoopContext(jobId, engine)));
+		} catch (err) {
+			logEvent(`[job ${jobId}] runner threw after ${((Date.now() - startedAt) / 1000).toFixed(1)} s · ${err instanceof Error ? err.message.slice(0, 500) : String(err)}`);
+			throw err;
 		} finally {
+			const after = jobStore.getJob(jobId);
+			logEvent(`[job ${jobId}] ended after ${((Date.now() - startedAt) / 1000).toFixed(1)} s · status ${after?.status ?? "gone"}${after?.error ? ` · ${String(after.error).slice(0, 500)}` : ""}`);
 			unregisterJobAbort(jobId);
 			// The last usage write may have been mid-flight when the loop died;
 			// persist what was folded (the abort path patches only status, so

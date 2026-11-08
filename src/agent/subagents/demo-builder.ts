@@ -7,6 +7,7 @@ import { runSubagent } from "./pi-run.ts";
 import type { DemoResult } from "../../core/contracts.ts";
 import { getHeadless, type DemoRunResult, type HeadlessApi } from "./headless.ts";
 import { healToolRecord } from "../tools/heal.ts";
+import { logEvent } from "../request-log.ts";
 
 /**
  * The demo-builder sub-agent (vision §2 interactive demos + §2.5 "sub-agents
@@ -181,6 +182,11 @@ function failureSummary(result: DemoRunResult | null): string {
 	return details.length > 0 ? `${summarizeCounts(result)} — ${details.join(" | ")}` : summarizeCounts(result);
 }
 
+/** A dropped / refused connection (worth one retry), not a model or logic failure. */
+export function isTransientFailure(message: string): boolean {
+	return /terminated|fetch failed|connection error|timed out|could not reach|was cut|other side closed|socket|network|ECONNRESET|ETIMEDOUT|EPIPE|ECONNREFUSED|UND_ERR/i.test(message);
+}
+
 export async function runDemoBuilder(input: DemoBuilderInput, opts: DemoBuilderOptions = {}): Promise<DemoResult> {
 	const headless = opts.headless ?? getHeadless();
 	const title = input.title.trim() || "Interactive demo";
@@ -192,7 +198,7 @@ export async function runDemoBuilder(input: DemoBuilderInput, opts: DemoBuilderO
 		return { title, html: "", tested: true, notes: `FAILED: ${reason}` };
 	}
 
-	const state: BuilderState = { html: null, testedHtml: null, lastResult: null };
+	let state: BuilderState = { html: null, testedHtml: null, lastResult: null };
 
 	const prompt = [
 		`Demo title: ${title}`,
@@ -203,22 +209,41 @@ export async function runDemoBuilder(input: DemoBuilderInput, opts: DemoBuilderO
 	].join("\n");
 
 	let finalText = "";
-	try {
-		const result = await runSubagent(Object.values(createDemoBuilderTools(state, headless, opts.onActivity)), {
-			role: "demoBuilder",
-			engine: opts.engine,
-			systemPrompt: INSTRUCTIONS,
-			prompt,
-			maxTurns: opts.maxSteps ?? 24,
-			abortSignal: opts.abortSignal,
-			onUsage: (usage) => opts.onUsage?.(usage),
-			onToolStart: (toolName) => opts.onActivity?.(toolName),
-			chatId: opts.chatId,
-		});
-		finalText = result.text;
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		return { title, html: "", tested: true, notes: `FAILED: the builder crashed — ${msg}` };
+	// FORK (0.4.7): ONE automatic retry when the connection drops mid-build.
+	// Unlike a teacher turn, a demo build has no learner-visible side effects
+	// — rebuilding from scratch is safe. A demo that already PASSED its
+	// headless test before the drop is delivered instead of rebuilt.
+	for (let attempt = 1; ; attempt++) {
+		try {
+			const result = await runSubagent(Object.values(createDemoBuilderTools(state, headless, opts.onActivity)), {
+				role: "demoBuilder",
+				engine: opts.engine,
+				systemPrompt: INSTRUCTIONS,
+				prompt,
+				maxTurns: opts.maxSteps ?? 24,
+				abortSignal: opts.abortSignal,
+				onUsage: (usage) => opts.onUsage?.(usage),
+				onToolStart: (toolName) => opts.onActivity?.(toolName),
+				chatId: opts.chatId,
+			});
+			finalText = result.text;
+			break;
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			const passed = state.html !== null && state.testedHtml === state.html && state.lastResult?.ok === true;
+			if (passed && !opts.abortSignal?.aborted) {
+				logEvent(`[demo] connection dropped after the demo passed its test (${msg.slice(0, 200)}) — delivering it`);
+				break;
+			}
+			if (attempt === 1 && !opts.abortSignal?.aborted && isTransientFailure(msg)) {
+				logEvent(`[demo] builder crashed on attempt 1 (${msg.slice(0, 200)}) — retrying once from scratch`);
+				opts.onActivity?.("retrying after a dropped connection");
+				state = { html: null, testedHtml: null, lastResult: null };
+				continue;
+			}
+			logEvent(`[demo] builder crashed on attempt ${attempt} — giving up · ${msg.slice(0, 500)}`);
+			return { title, html: "", tested: true, notes: `FAILED: the builder crashed — ${msg}${attempt > 1 ? " (after one automatic retry)" : ""}` };
+		}
 	}
 
 	// The model produced nothing.
