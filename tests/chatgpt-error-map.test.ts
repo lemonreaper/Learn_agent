@@ -8,7 +8,17 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { chatGPTErrorCode, chatGPTStreamError } from "../src/agent/chatgpt-stream.ts";
+import { chatGPTErrorCode, chatGPTStreamError, networkCodeOf } from "../src/agent/chatgpt-stream.ts";
+
+describe("networkCodeOf — the transport code the SDK would hide", () => {
+	it("reads undici's cause.code, a nested cause, or err.code; never prose", () => {
+		assert.equal(networkCodeOf(new TypeError("fetch failed", { cause: { code: "ECONNRESET" } })), "ECONNRESET");
+		assert.equal(networkCodeOf({ cause: { cause: { code: "UND_ERR_CONNECT_TIMEOUT" } } }), "UND_ERR_CONNECT_TIMEOUT");
+		assert.equal(networkCodeOf({ code: "ENOTFOUND" }), "ENOTFOUND");
+		assert.equal(networkCodeOf({ cause: { code: "secret words here" } }), null);
+		assert.equal(networkCodeOf(null), null);
+	});
+});
 
 describe("chatGPTStreamError — named causes", () => {
 	it("plan limits under every code, not only subscription_sharing_*", () => {
@@ -28,6 +38,14 @@ describe("chatGPTStreamError — named causes", () => {
 		for (const m of ["fetch failed", "ECONNRESET", "connect ETIMEDOUT 104.18.1.1:443", "UND_ERR_SOCKET other side closed", "getaddrinfo ENOTFOUND api.openai.com"]) {
 			assert.match(chatGPTStreamError(m), /Could not reach OpenAI/, m);
 		}
+	});
+
+	it("the OpenAI SDK's own wording for transport failures (0.4.4 missed these)", () => {
+		for (const m of ["Connection error.", "Request timed out.", "terminated"]) {
+			assert.match(chatGPTStreamError(m), /^Could not reach OpenAI from this computer\./, m);
+		}
+		// With the transport code captured at the fetch seam, it is shown.
+		assert.match(chatGPTStreamError("Connection error. ECONNRESET"), /^Could not reach OpenAI from this computer \(code: ECONNRESET\)\./);
 	});
 
 	it("OpenAI server errors", () => {

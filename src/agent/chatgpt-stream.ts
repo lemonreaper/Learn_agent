@@ -38,7 +38,15 @@ export function chatGPTStreamError(message: string): string {
 	// FORK: the app could not reach OpenAI at all — in practice a VPN that
 	// dropped or covers only the browser (the app's requests do not follow a
 	// system proxy). Checked BEFORE cancel/closed, which "socket closed" hits.
-	if (/fetch failed|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR|socket|network|getaddrinfo|certificate|TLS/i.test(message)) return "Could not reach OpenAI from this computer. If you use a VPN, make sure it is connected and routes ALL traffic (TUN / full tunnel), then retry. No API-key fallback was used.";
+	// FORK (2026-11-08): the OpenAI SDK rewrites every transport failure as
+	// "Connection error." / "Request timed out.", and a stream cut mid-body
+	// surfaces as "terminated" — none carried a code, so 0.4.4 still fell
+	// through to the catch-all. The real network code is captured at the
+	// fetch seam (networkCodeOf) and appended to the message.
+	if (/fetch failed|connection error|timed out|terminated|ECONNRESET|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|UND_ERR|socket|network|getaddrinfo|certificate|TLS/i.test(message)) {
+		const code = chatGPTErrorCode(message);
+		return `Could not reach OpenAI from this computer${code ? ` (code: ${code})` : ""}. If you use a VPN, make sure it is connected and routes ALL traffic (TUN / full tunnel), then retry. No API-key fallback was used.`;
+	}
 	if (/cancel|abort|closed|disconnect/i.test(message)) return "ChatGPT request cancelled or connection closed. No API-key fallback was used.";
 	// FORK: OpenAI-side failures — nothing to fix locally.
 	if (/\b5\d\d\b|server_error|overloaded|service_unavailable|temporarily unavailable/i.test(message)) return "OpenAI had a server error. Retry in a minute. No API-key fallback was used.";
@@ -46,6 +54,15 @@ export function chatGPTStreamError(message: string): string {
 	if (/incomplete|terminal|interrupted|stop reason/.test(message)) return "ChatGPT returned an incomplete response. Retry when ready; no API-key fallback was used.";
 	const code = chatGPTErrorCode(message);
 	return `ChatGPT request failed${code ? ` (code: ${code})` : ""}. Check your connection and ChatGPT usage, then retry. No API-key fallback was used.`;
+}
+
+/** The machine code of a transport failure (fork, 2026-11-08): undici puts
+ *  it on err.cause.code (ECONNRESET, UND_ERR_SOCKET, …), Node on err.code;
+ *  a TLS failure names itself in err.cause.code too. Never prose. */
+export function networkCodeOf(err: unknown): string | null {
+	const pick = (v: unknown) => (typeof v === "string" && /^[A-Z][A-Z0-9_]{2,}$/.test(v) ? v : null);
+	const e = err as { code?: unknown; cause?: { code?: unknown; cause?: { code?: unknown } } } | null;
+	return pick(e?.cause?.code) ?? pick(e?.cause?.cause?.code) ?? pick(e?.code) ?? null;
 }
 
 /** Restrict the body at the final payload seam, even if caller samplingParams add fields. */
@@ -87,6 +104,7 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 			let scope: AdmissionScope | undefined;
 			let committed = false;
 			let terminal = false;
+			let networkCode: string | null = null;
 			const check = () => { if (signal.aborted || !scope || !chatGPTScopeCurrent(scope)) throw new Error("cancelled or catalog authority changed"); };
 			try {
 				if (logicalModel.provider !== "chatgpt") throw new Error("ChatGPT account catalog has no selected model");
@@ -109,7 +127,12 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 						if (committed) throw new Error("ChatGPT does not retry admitted requests");
 						lifecycle?.beforeDispatch(scope!);
 						committed = true;
-						return delegate(input, init);
+						// FORK: keep the transport's machine code before the SDK
+						// replaces the error with "Connection error.".
+						return delegate(input, init).catch((err: unknown) => {
+							networkCode = networkCodeOf(err);
+							throw err;
+						});
 					},
 					onPayload: async (raw, model) => {
 						const replacement = await options?.onPayload?.(raw, model);
@@ -140,7 +163,8 @@ export function chatGPTStream(background: () => boolean, lifecycle?: ChatGPTDisp
 			} catch (err) {
 				if (terminal) return;
 				if (!committed) lifecycle?.noDispatch(await chatGPTDenial(scope, controller, options?.signal?.aborted === true, purpose));
-				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: chatGPTStreamError(err instanceof Error ? err.message : "") };
+				const raw = err instanceof Error ? err.message : "";
+				partial = { ...partial, stopReason: signal.aborted ? "aborted" : "error", errorMessage: chatGPTStreamError(networkCode ? `${raw} ${networkCode}` : raw) };
 				output.push({ type: "error", reason: partial.stopReason as "error" | "aborted", error: partial });
 			} finally { release(); output.end(); }
 		})();
