@@ -218,6 +218,19 @@ test("case-insensitive Authorization overrides including null are refused before
 	assert.equal(requests.length, before);
 });
 
+test("fork: a transport failure is named, with the network code the SDK hides", async () => {
+	const stubbed = globalThis.fetch;
+	globalThis.fetch = async () => { throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } }); };
+	try {
+		const engine = piEngineForSpec({ provider: "chatgpt", id: model.id }, false);
+		const result = await engine.streamFn(engine.model, context()).result();
+		assert.equal(result.stopReason, "error");
+		assert.match(result.errorMessage ?? "", /^Could not reach OpenAI from this computer \(code: ECONNRESET\)\./);
+	} finally {
+		globalThis.fetch = stubbed;
+	}
+});
+
 test("full credential-storage invalidation aborts foreground and background controllers and clears capabilities", () => {
 	const foreground = chatGPTAbortController(false), background = chatGPTAbortController(true);
 	ipc({ channel: "lh:chatgpt", kind: "state", stamp: { epoch: 2, authorityRevision: 2, revision: 3 }, status: { ...status, available: false }, invalidate: "all" });
